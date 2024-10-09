@@ -1,11 +1,11 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
+import io from 'socket.io-client';
 
 const VideoChat = () => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const [peerConnection, setPeerConnection] = useState(null);
-  const [offer, setOffer] = useState(null);
-  const [answer, setAnswer] = useState(null);
+  const [socket, setSocket] = useState(null);
 
   const mediaConstraints = {
     video: true,
@@ -15,12 +15,26 @@ const VideoChat = () => {
   const servers = {
     iceServers: [
       {
-        urls: 'stun:stun.l.google.com:19302', // STUN server to bypass NAT/firewall
+        urls: 'stun:stun.l.google.com:19302',
       },
     ],
   };
 
-  // Get access to local media stream (video/audio)
+  useEffect(() => {
+    // Initialize socket connection
+    const newSocket = io('https://socketservervideochat.onrender.com');
+    setSocket(newSocket);
+
+    newSocket.on('offer', handleReceiveOffer);
+    newSocket.on('answer', handleReceiveAnswer);
+    newSocket.on('ice-candidate', handleNewICECandidate);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []);
+
+  // Get local media stream
   const startLocalStream = async () => {
     try {
       const localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
@@ -30,20 +44,17 @@ const VideoChat = () => {
     }
   };
 
-  // Create an offer to start the WebRTC connection
+  // Create and send an offer
   const initiateCall = async () => {
     const pc = new RTCPeerConnection(servers);
     setPeerConnection(pc);
 
     const localStream = localVideoRef.current.srcObject;
-    localStream.getTracks().forEach(track => {
-      pc.addTrack(track, localStream);
-    });
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('ICE Candidate:', event.candidate);
-        // Normally, you send this to the remote peer
+        socket.emit('ice-candidate', event.candidate);
       }
     };
 
@@ -53,18 +64,19 @@ const VideoChat = () => {
 
     const localOffer = await pc.createOffer();
     await pc.setLocalDescription(localOffer);
-    setOffer(localOffer); // Save the offer
-    console.log('Offer created:', localOffer);
+    socket.emit('offer', localOffer); // Send offer to the signaling server
+
+    console.log('Offer created and sent');
   };
 
-  // Simulate receiving an offer and create an answer
-  const handleReceiveOffer = async () => {
+  // Handle the received offer
+  const handleReceiveOffer = async (offer) => {
     const pc = new RTCPeerConnection(servers);
     setPeerConnection(pc);
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('ICE Candidate received:', event.candidate);
+        socket.emit('ice-candidate', event.candidate);
       }
     };
 
@@ -76,17 +88,30 @@ const VideoChat = () => {
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
     localVideoRef.current.srcObject = localStream;
-    await pc.setRemoteDescription(new RTCSessionDescription(offer)); // Use the received offer
+
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
     const localAnswer = await pc.createAnswer();
     await pc.setLocalDescription(localAnswer);
-    setAnswer(localAnswer); // Save the answer
-    console.log('Answer created:', localAnswer);
+    socket.emit('answer', localAnswer); // Send answer to the signaling server
+
+    console.log('Answer created and sent');
   };
 
-  // Simulate setting the answer for the calling peer
-  const handleReceiveAnswer = async () => {
+  // Handle the received answer
+  const handleReceiveAnswer = async (answer) => {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
     console.log('Answer received and set as remote description');
+  };
+
+  // Handle new ICE candidates
+  const handleNewICECandidate = async (candidate) => {
+    try {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      console.log('ICE candidate added');
+    } catch (error) {
+      console.error('Error adding ICE candidate:', error);
+    }
   };
 
   return (
@@ -98,18 +123,7 @@ const VideoChat = () => {
       </div>
 
       <button onClick={startLocalStream}>Start Local Stream</button>
-      <button onClick={initiateCall}>Initiate Call (Create Offer)</button>
-      <button onClick={handleReceiveOffer}>Receive Offer and Create Answer</button>
-      <button onClick={handleReceiveAnswer}>Set Answer on Caller Side</button>
-
-      <div>
-        <h4>Offer:</h4>
-        <textarea value={offer ? JSON.stringify(offer) : ''} readOnly rows="10" cols="50"></textarea>
-      </div>
-      <div>
-        <h4>Answer:</h4>
-        <textarea value={answer ? JSON.stringify(answer) : ''} readOnly rows="10" cols="50"></textarea>
-      </div>
+      <button onClick={initiateCall}>Initiate Call</button>
     </div>
   );
 };
